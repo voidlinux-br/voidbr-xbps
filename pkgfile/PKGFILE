@@ -4,7 +4,7 @@
 pkgname=voidbr-xbps
 pkgdesc="XBPS package system utilities support hooks"
 pkgver=0.60.8
-pkgrel=16
+pkgrel=17
 provides=(xbps libxbps)  # "eu SOU o xbps/libxbps, pra quem depender deles"
 replaces=(xbps libxbps)  # "remove o xbps/libxbps antigo automaticamente quando eu instalar"
 conflicts=(xbps libxbps) # "nunca me deixe coexistir com o xbps/libxbps original"
@@ -16,17 +16,18 @@ url="https://github.com/voidlinuxbr/${pkgname}"
 # commit do xbps upstream em que os patches foram testados
 # (para acompanhar o master, troque por: "xbps::git+https://github.com/void-linux/xbps.git")
 _xbps_commit=c5f41d5b
-# patches aplicados em ordem (o 0002 depende do 0001); ficam em pkgfile/, ao lado deste PKGFILE
+# patches aplicados em ordem (cada um depende dos anteriores); ficam em pkgfile/, ao lado deste PKGFILE
 _patches=(
 	0001-xbps-hooks-support.patch
 	0002-xbps-parallel-downloads.patch
+	0003-xbps-overwrite.patch
 )
 source=(
 	"xbps::git+https://github.com/void-linux/xbps.git#commit=${_xbps_commit}"
 	"git+${url}.git"
 	"${_patches[@]}"
 )
-md5sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+md5sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 makedepends=(
 	git

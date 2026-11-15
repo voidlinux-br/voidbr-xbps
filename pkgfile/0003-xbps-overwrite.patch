@@ -1,0 +1,276 @@
+diff --git a/bin/xbps-install/main.c b/bin/xbps-install/main.c
+index 17bfcec8..975041fa 100644
+--- a/bin/xbps-install/main.c
++++ b/bin/xbps-install/main.c
+@@ -84,6 +84,9 @@ usage(bool fail)
+ 	    "                             If specified twice, also remove uninstalled packages\n"
+ 	    "                             If specified three times, remove everything from the cache\n"
+ 	    " -o, --remove-orphans        Remove package orphans\n"
++	    "     --overwrite <glob>      Overwrite conflicting files matching <glob>\n"
++	    "                             (`*' overwrites all, `!glob' excludes;\n"
++	    "                             can be specified multiple times)\n"
+ 	    "     --parallel-downloads <n>\n"
+ 	    "                             Download up to <n> packages at the same time\n"
+ 	    "                             (overrides `paralleldownloads' in xbps.d)\n"
+@@ -158,6 +161,7 @@ main(int argc, char **argv)
+ 		{ "reproducible", no_argument, NULL, 1 },
+ 		{ "staging", no_argument, NULL, 2 },
+ 		{ "parallel-downloads", required_argument, NULL, 3 },
++		{ "overwrite", required_argument, NULL, 4 },
+ 		{ NULL, 0, NULL, 0 }
+ 	};
+ 	struct xbps_handle xh;
+@@ -189,6 +193,16 @@ main(int argc, char **argv)
+ 				exit(EXIT_FAILURE);
+ 			}
+ 			break;
++		case 4:
++			if (xh.overwrite == NULL)
++				xh.overwrite = xbps_array_create();
++			if (xh.overwrite == NULL ||
++			    !xbps_array_add_cstring(xh.overwrite, optarg)) {
++				xbps_error_printf("failed to add --overwrite "
++				    "pattern `%s'\n", optarg);
++				exit(EXIT_FAILURE);
++			}
++			break;
+ 		case 'A':
+ 			flags |= XBPS_FLAG_INSTALL_AUTO;
+ 			break;
+diff --git a/bin/xbps-install/xbps-install.1 b/bin/xbps-install/xbps-install.1
+index 491fa7c3..0e7c3649 100644
+--- a/bin/xbps-install/xbps-install.1
++++ b/bin/xbps-install/xbps-install.1
+@@ -120,6 +120,26 @@ is specified twice all files will be unpacked, even
+ Show the help message.
+ .It Fl I , Fl -ignore-file-conflicts
+ Ignore detected file conflicts in a transaction.
++Ignored conflicts are only reported in debug mode
++.Pq Fl d .
++.It Fl -overwrite Ar glob
++Overwrite the conflicting files whose path matches
++.Ar glob
++.Pq see Xr fnmatch 3 ,
++like
++.Xr pacman 8 .
++The path is matched with and without the leading slash and also inside
++.Fl -rootdir .
++Patterns starting with an exclamation mark negate a previous match and the
++last matching pattern wins;
++.Sq *
++overwrites every conflicting file.
++Conflicts that do not match are still errors.
++A directory is never replaced by a file, nor a file by a directory.
++This option can be specified multiple times and adds to the
++.Sy overwrite
++patterns from
++.Xr xbps.d 5 .
+ .It Fl i , Fl -ignore-conf-repos
+ Ignore repositories defined in configuration files.
+ Only repositories specified in the command line via
+diff --git a/data/xbps.d.5 b/data/xbps.d.5
+index 3f58f503..81249392 100644
+--- a/data/xbps.d.5
++++ b/data/xbps.d.5
+@@ -47,6 +47,7 @@ Multiple entries are permitted for the
+ .Sy ignorepkg ,
+ .Sy include ,
+ .Sy noextract ,
++.Sy overwrite ,
+ .Sy preserve ,
+ .Sy repository
+ and
+@@ -84,6 +85,23 @@ but files that also match the second pattern will still be extracted.
+ .It Sy noextract=/usr/bin/f*
+ .It Sy noextract=!/usr/bin/foo
+ .El
++.It Sy overwrite=pattern
++Overwrite the files matching
++.Ar pattern
++when two packages of a transaction conflict on them, instead of failing,
++like
++.Xr pacman 8
++.Fl -overwrite .
++The conflict is only reported in debug mode.
++Patterns follow the same rules as
++.Sy noextract ;
++.Sy overwrite=*
++overwrites every conflicting file.
++.Pp
++.Bl -tag -compact -width overwrite=!/usr/share/nano/nanorc.nanorc
++.It Sy overwrite=/usr/share/nano/*
++.It Sy overwrite=!/usr/share/nano/nanorc.nanorc
++.El
+ .It Sy include=path/file.conf
+ Imports settings from the specified configuration file.
+ .Em NOTE
+diff --git a/include/xbps.h.in b/include/xbps.h.in
+index 9b30bcc2..3080e403 100644
+--- a/include/xbps.h.in
++++ b/include/xbps.h.in
+@@ -710,6 +710,17 @@ struct xbps_handle {
+ 	 * xbps.d(5); frontends may override it after xbps_init().
+ 	 */
+ 	int paralleldownloads;
++	/**
++	 * @var overwrite
++	 *
++	 * Proplib array of glob patterns (fnmatch(3), `!' negates, the
++	 * last matching pattern wins). A file conflict between packages
++	 * of the transaction whose path matches is resolved silently:
++	 * the file is overwritten, like pacman(8) --overwrite. Set from
++	 * the "overwrite" keyword in xbps.d(5) and by frontends
++	 * (xbps-install --overwrite) before or after xbps_init().
++	 */
++	xbps_array_t overwrite;
+ };
+ 
+ /**
+diff --git a/lib/conf.c b/lib/conf.c
+index 2e7488d7..a9c2108d 100644
+--- a/lib/conf.c
++++ b/lib/conf.c
+@@ -199,6 +199,19 @@ store_noextract(struct xbps_handle *xhp, const char *value)
+ 	xbps_dbg_printf("Added noextract pattern: %s\n", value);
+ }
+ 
++static void
++store_overwrite(struct xbps_handle *xhp, const char *value)
++{
++	if (*value == '\0')
++		return;
++	if (xhp->overwrite == NULL) {
++		xhp->overwrite = xbps_array_create();
++		assert(xhp->overwrite);
++	}
++	xbps_array_add_cstring(xhp->overwrite, value);
++	xbps_dbg_printf("Added overwrite pattern: %s\n", value);
++}
++
+ enum {
+ 	KEY_ERROR = 0,
+ 	KEY_ARCHITECTURE,
+@@ -207,6 +220,7 @@ enum {
+ 	KEY_IGNOREPKG,
+ 	KEY_INCLUDE,
+ 	KEY_NOEXTRACT,
++	KEY_OVERWRITE,
+ 	KEY_PARALLELDOWNLOADS,
+ 	KEY_PRESERVE,
+ 	KEY_REPOSITORY,
+@@ -229,6 +243,7 @@ static const struct key {
+ 	{ "include",       7, KEY_INCLUDE },
+ 	{ "keepconf",      8, KEY_KEEPCONF },
+ 	{ "noextract",     9, KEY_NOEXTRACT },
++	{ "overwrite",     9, KEY_OVERWRITE },
+ 	{ "paralleldownloads", 17, KEY_PARALLELDOWNLOADS },
+ 	{ "preserve",      8, KEY_PRESERVE },
+ 	{ "repository",   10, KEY_REPOSITORY },
+@@ -470,6 +485,9 @@ parse_file(struct xbps_handle *xhp, const char *path, bool nested)
+ 		case KEY_NOEXTRACT:
+ 			store_noextract(xhp, val);
+ 			break;
++		case KEY_OVERWRITE:
++			store_overwrite(xhp, val);
++			break;
+ 		case KEY_INCLUDE:
+ 			/* Avoid double-nested parsing, only allow it once */
+ 			if (nested) {
+diff --git a/lib/transaction_files.c b/lib/transaction_files.c
+index ea2f5a30..863c7777 100644
+--- a/lib/transaction_files.c
++++ b/lib/transaction_files.c
+@@ -27,6 +27,7 @@
+ #include <dirent.h>
+ #include <errno.h>
+ #include <fcntl.h>
++#include <fnmatch.h>
+ #include <limits.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -429,6 +430,54 @@ collect_obsoletes(struct xbps_handle *xhp)
+ 	return rv;
+ }
+ 
++/*
++ * VoidBR: --overwrite <glob> / overwrite=<glob> (como o pacman). Cada
++ * padrão é testado contra o caminho do pacote ("/usr/bin/foo"), o mesmo
++ * sem a barra inicial e o caminho dentro do rootdir; vale o último padrão
++ * que casar com qualquer um deles (`!' nega, como no noextract). Diretório
++ * nunca é sobrescrito por arquivo nem arquivo por diretório (o pacman
++ * também recusa).
++ */
++static bool
++can_overwrite_file(struct xbps_handle *xhp, const char *file,
++		enum type type, enum type oldtype)
++{
++	char rooted[XBPS_MAXPATH];
++	const char *paths[3];
++	unsigned int npaths = 0;
++	bool match = false;
++
++	if (xhp->overwrite == NULL)
++		return false;
++	if (type == TYPE_DIR || oldtype == TYPE_DIR)
++		return false;
++
++	paths[npaths++] = file;
++	if (file[0] == '/')
++		paths[npaths++] = file + 1;
++	if (xbps_path_join(rooted, sizeof(rooted), xhp->rootdir, file,
++	    (char *)NULL) != -1)
++		paths[npaths++] = rooted;
++
++	for (unsigned int i = 0; i < xbps_array_count(xhp->overwrite); i++) {
++		const char *pattern = NULL;
++		bool negate;
++
++		if (!xbps_array_get_cstring_nocopy(xhp->overwrite, i, &pattern) ||
++		    pattern == NULL)
++			continue;
++		if ((negate = *pattern == '!') || *pattern == '\\')
++			pattern++;
++		for (unsigned int j = 0; j < npaths; j++) {
++			if (fnmatch(pattern, paths[j], 0) == 0) {
++				match = !negate;
++				break;
++			}
++		}
++	}
++	return match;
++}
++
+ static int
+ collect_file(struct xbps_handle *xhp, const char *file, size_t size,
+ 		const char *pkgname, const char *pkgver, unsigned int idx,
+@@ -510,14 +559,27 @@ collect_file(struct xbps_handle *xhp, const char *file, size_t size,
+ 			/*
+ 			 * Multiple packages creating the same file.
+ 			 * This should never happen in a transaction.
++			 *
++			 * VoidBR: conflito liberado por --overwrite ou ignorado
++			 * por --ignore-file-conflicts não é erro: só aparece no
++			 * modo --debug (como o pacman).
+ 			 */
++			if (can_overwrite_file(xhp, file, type, item->new.type)) {
++				xbps_dbg_printf("[files] %s: overwriting `%s' "
++				    "installed by package %s (overwrite)\n",
++				    pkgver, file, item->new.pkgver);
++				return 0;
++			}
++			if (xhp->flags & XBPS_FLAG_IGNORE_FILE_CONFLICTS) {
++				xbps_dbg_printf("[files] %s: ignoring conflict: "
++				    "file `%s' already installed by package %s\n",
++				    pkgver, file, item->new.pkgver);
++				return 0;
++			}
+ 			xbps_set_cb_state(xhp, XBPS_STATE_FILES_FAIL,
+ 			    EEXIST, pkgver,
+ 			    "%s: file `%s' already installed by package %s.",
+ 			    pkgver, file, item->new.pkgver);
+-			if (xhp->flags & XBPS_FLAG_IGNORE_FILE_CONFLICTS)
+-				return 0;
+-
+ 			return EEXIST;
+ 		}
+ 		goto add;

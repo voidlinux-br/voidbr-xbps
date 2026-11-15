@@ -1,12 +1,13 @@
 # voidbr-xbps
 
-O **xbps** do Void Linux com duas extensões mantidas pela VoidBR:
-**hooks de transação no estilo pacman** e **downloads paralelos com
-interface de progresso no estilo pacman**.
+O **xbps** do Void Linux com três extensões mantidas pela VoidBR:
+**hooks de transação no estilo pacman**, **downloads paralelos com
+interface de progresso no estilo pacman** e **`--overwrite` no estilo
+pacman** para conflitos de arquivos.
 
 Não é um fork: o código-base é o xbps oficial
 ([void-linux/xbps](https://github.com/void-linux/xbps)), fixado num commit
-do upstream, e todas as mudanças ficam em dois patches aplicados por cima.
+do upstream, e todas as mudanças ficam em três patches aplicados por cima.
 Repositórios, formato `.xbps`, assinaturas e pkgdb continuam 100%
 compatíveis com o Void Linux.
 
@@ -122,6 +123,40 @@ saída é a mesma do xbps original, uma linha por pacote, boa para log.
 thread, callbacks serializados e inicialização segura entre threads,
 validados com ThreadSanitizer.
 
+### `0003-xbps-overwrite.patch`: conflitos de arquivos como no pacman
+
+Quando dois pacotes da mesma transação instalam o mesmo arquivo, o xbps
+aborta com `ERROR: ... already installed by package ...`. O patch deixa
+esse caso igual ao `--overwrite` do pacman:
+
+- **`--overwrite <glob>`** (novo, no `xbps-install`): conflitos de arquivos
+  cujo caminho casa com o padrão são resolvidos em silêncio, e o arquivo é
+  sobrescrito. Conflitos que não casam continuam sendo erro. Pode ser usada
+  várias vezes; `!padrão` cria exceções (vale o último que casar) e
+  `--overwrite '*'` sobrescreve tudo. O padrão é testado com e sem a barra
+  inicial e também dentro do `--rootdir`.
+
+  ```sh
+  xbps-install -S --overwrite '/usr/share/nano/*' voidbr-nano-config
+  xbps-install -S --overwrite '*' --overwrite '!/etc/*' pacote
+  ```
+
+- **`overwrite=<glob>`** no `xbps.d(5)`: a mesma lista via configuração,
+  somada às `--overwrite` da linha de comando.
+
+  ```ini
+  # /etc/xbps.d/overwrite.conf
+  overwrite=/usr/share/nano/*
+  ```
+
+- **`-I, --ignore-file-conflicts`**: continua ignorando todos os conflitos,
+  mas não imprime mais `ERROR:` para cada um.
+
+Conflito liberado por qualquer das duas opções só aparece no modo `-d`
+(`--debug`). Diretório nunca é sobrescrito por arquivo, nem arquivo por
+diretório, como no pacman. A detecção continua sendo a do xbps: só entre
+os pacotes da mesma transação.
+
 ---
 
 ## vinstall: wrapper para os comandos xbps-*
@@ -190,8 +225,9 @@ O `pkgfile/PKGFILE` é processado pelo
 [pkgmake](https://github.com/voidlinuxbr/voidbr-pkgmake):
 
 1. clona o xbps do upstream no commit fixado em `_xbps_commit`;
-2. aplica `pkgfile/0001-*.patch` e `pkgfile/0002-*.patch`, nessa ordem
-   (o 0002 depende do 0001); qualquer falha aborta o build;
+2. aplica `pkgfile/0001-*.patch`, `pkgfile/0002-*.patch` e
+   `pkgfile/0003-*.patch`, nessa ordem (cada um depende dos anteriores);
+   qualquer falha aborta o build;
 3. compila com `./configure --enable-rpath --prefix=/usr --sysconfdir=/etc`;
 4. instala junto os arquivos de configuração e as chaves dos repositórios
    da VoidBR.
